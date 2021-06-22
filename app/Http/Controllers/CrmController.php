@@ -534,12 +534,14 @@ class CrmController extends Controller
 
         //Попытка авторизации: 90 дней действует Refresh Token, 1 день действует Access Token
         //Проверяем, сколько дней прошло с момента обновления последний записи - столько дней назад получен последний access token
-      /*  $last_refresh_token = token::orderBy('created_at', 'DESC')->first();
+        $last_refresh_token = token::orderBy('created_at', 'DESC')->first();
         $update             = $last_refresh_token->updated_at;
         $days_left          = ceil((Carbon::now()->getTimestamp() - Carbon::parse($update)->getTimestamp())/86400);
         if ($days_left >= 2){//если прошло больше суток (ceil округляет до 2), получаем новую пару Refresh token -Access token
             $auth_code = $this->auth($request,2);
         }elseif($days_left >= 90){//если не было активности больше 3 месяцев, проходим авторизацию заново
+            $auth_code = $this->auth($request,1);
+        }elseif (!$last_refresh_token){
             $auth_code = $this->auth($request,1);
         }
 
@@ -561,8 +563,7 @@ class CrmController extends Controller
             $customer_id = $this->add_customer($contact_id);
             $json_customer = $this->link_customer_to_contact($customer_id,$contact_id);
         }
-*/
-        
+
 
         return '';
     }
