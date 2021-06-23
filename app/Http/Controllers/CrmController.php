@@ -2,10 +2,14 @@
 
 namespace App\Http\Controllers;
 
+use AmoCRM\Client\AmoCRMApiClient;
 use Illuminate\Http\Request;
 use Exception;
 use App\Models\token;
 use Carbon\Carbon;
+use League\OAuth2\Client\Token\AccessToken;
+use AmoCRM\Collections\UsersCollection;
+use AmoCRM\Filters\ContactsFilter;
 
 class CrmController extends Controller
 {
@@ -230,6 +234,60 @@ class CrmController extends Controller
         return $lead_id;
     }
 
+    public function getRandomUser(){
+        $clientId     = config('api.api_credentials.client_id');
+        $clientSecret = config('api.api_credentials.client_secret');
+        $redirectUri  = config('api.api_credentials.redirect_url');
+        $subdomain    = config('api.api_credentials.subdomain');
+        $basedomain   = $subdomain . '.amocrm.ru';
+
+        $apiClient = new AmoCRMApiClient($clientId, $clientSecret, $redirectUri);
+        $apiClient->setAccountBaseDomain($basedomain);
+
+        //Токены
+        $tokens       = $this->get_tokens();
+
+        $accessToken = new AccessToken([
+            'refresh_token'=> $tokens['refresh_token'],
+            'access_token' => $tokens['access_token'],
+            'token_type'   => 'Bearer',
+            'expires'      => $tokens['expires_in'],
+        ]);
+
+        $apiClient->setAccessToken($accessToken);
+        $usersService = $apiClient->users();
+        $usersCollection = $usersService->get();
+        $usersArray      = $usersCollection->toArray();
+
+        $len = count($usersArray);
+        $pos = rand(0,$len-1);
+
+        $user = $usersArray[$pos]['id'];
+
+        return $user;
+    }
+
+    public function getWeekend($timestamp,$duration){
+
+        $dateString= gmdate("Y-m-d\TH:i:s", $timestamp);
+        $dateArray = explode('T',$dateString);
+        $date      = strtotime($dateArray[0]);
+        $hours     = (int)explode(':',$dateArray[1])[0];
+        $weekday   = date("l",$date);
+        $normalized_weekday = strtolower($weekday);
+        if ($normalized_weekday == 'sunday' || $normalized_weekday == 'saturday'){
+            $timestamp = ($normalized_weekday == 'sunday')?$timestamp+86400:$timestamp+172800;
+        }
+
+        if($hours>18){
+            $timestamp = $timestamp-($hours-18)*3600-$duration;
+        }elseif($hours<9){
+            $timestamp = $timestamp+(9-$hours)*3600;
+        }
+
+        return $timestamp ;
+    }
+
     public function add_task($lead_id){
         //Токены
         $tokens       = $this->get_tokens();
@@ -244,13 +302,15 @@ class CrmController extends Controller
         ];
 
         //Описание задачи
+        $duration = 18000;
         $tasks['request']['tasks']['add'][0] = [
             'element_id'         => $lead_id, #ID of the lead
             'element_type'       => 2, #Show that this is a lead, not a contact
-            'task_type'          => 1, #Call
+            'task_type'          => 2, #Call
+            'duration'           => $duration,
             'text'               => 'Задача, закрепленная за сделкой '.$lead_id,
-            'responsible_user_id'=> 2976497,
-            'complete_till'      => time()+345600,//unix-время + кол-во секунд в 4х днях
+            'responsible_user_id'=> $this->getRandomUser(),
+            'complete_till'      => $this->getWeekend(time(),$duration),
         ];
 
         //Выполняем запрос
@@ -396,56 +456,59 @@ class CrmController extends Controller
         $access_token = $tokens['access_token'];
         $subdomain    = config('api.api_credentials.subdomain');
 
+
         //заголовки
         $headers = [
             "Content-Type: application/json",
             'Authorization: Bearer ' . $access_token
         ];
 
-        $contacts_data = $this->curl([
-            CURLOPT_RETURNTRANSFER =>true,
-            CURLOPT_USERAGENT      =>'amoCRM-oAuth-client/2.0',
-            CURLOPT_URL            =>'https://'.$subdomain.'.amocrm.ru/api/v4/contacts',
-            CURLOPT_HTTPHEADER     =>$headers,
-            CURLOPT_HEADER         =>false,
-            CURLOPT_CUSTOMREQUEST  =>'GET',
-            CURLOPT_SSL_VERIFYPEER =>1,
-            CURLOPT_SSL_VERIFYHOST =>2,
-        ]);
+        $clientId     = config('api.api_credentials.client_id');
+        $clientSecret = config('api.api_credentials.client_secret');
+        $redirectUri  = config('api.api_credentials.redirect_url');
+        $basedomain   = $subdomain . '.amocrm.ru';
 
-        $contacts = json_decode($contacts_data['json_response'],true);
+        $apiClient = new AmoCRMApiClient($clientId, $clientSecret, $redirectUri);
+        $apiClient->setAccountBaseDomain($basedomain);
+
+        $accessToken = new AccessToken([
+            'refresh_token'=> $tokens['refresh_token'],
+            'access_token' => $tokens['access_token'],
+            'token_type'   => $tokens['token_type'],
+            'expires'      => $tokens['expires_in'],
+        ]);
+        $apiClient->setAccessToken($accessToken);
+
+        $filter = new ContactsFilter();
+        $filter->setQuery($phone);
+        $contacts = $apiClient->contacts()->get($filter)->toArray();
 
         $action = [0,''];
 
-        if (is_array($contacts)){
-            foreach ($contacts['_embedded']['contacts'] as $contact){
-                foreach ($contact['custom_fields_values'] as $custom_field){
-                    if ($custom_field['field_id'] == '346613'){
-                        if ($custom_field['values'][0]['value']==$phone){
-                            $id = $contact['id'];
-                        }
-                    }
-                }
+        if (count($contacts)>0){
+            $id=$contacts[0]['id'];
+            $entities = $this->getEntitiesById('contacts',$id);
+            foreach ($entities as $entity){
+                if ($entity['to_entity_type']=='leads'){$leadId = $entity['to_entity_id'];}
             }
+        }
 
-            if (isset($id)){ // Если совпадение по номеру телефона, получаем связанную сделку
-                $lead_id = $this->getEntitiesById('contacts',$id)[0]['to_entity_id'];
-                $lead = $this->curl([
-                    CURLOPT_RETURNTRANSFER =>true,
-                    CURLOPT_USERAGENT      =>'amoCRM-oAuth-client/2.0',
-                    CURLOPT_URL            =>'https://'.$subdomain.'.amocrm.ru/api/v4/leads/'.$lead_id,
-                    CURLOPT_HTTPHEADER     =>$headers,
-                    CURLOPT_HEADER         =>false,
-                    CURLOPT_CUSTOMREQUEST  =>'GET',
-                    CURLOPT_SSL_VERIFYPEER =>1,
-                    CURLOPT_SSL_VERIFYHOST =>2,
-                ]);
-                $status = json_decode($lead['json_response'],true)['status_id'];
-                if ($status == 142){
-                    $action = [1,$id];
-                }else{
-                    $action = [2,''];
-                }
+        if (isset($leadId)){
+            $lead = $this->curl([
+                CURLOPT_RETURNTRANSFER =>true,
+                CURLOPT_USERAGENT      =>'amoCRM-oAuth-client/2.0',
+                CURLOPT_URL            =>'https://'.$subdomain.'.amocrm.ru/api/v4/leads/'.$leadId,
+                CURLOPT_HTTPHEADER     =>$headers,
+                CURLOPT_HEADER         =>false,
+                CURLOPT_CUSTOMREQUEST  =>'GET',
+                CURLOPT_SSL_VERIFYPEER =>1,
+                CURLOPT_SSL_VERIFYHOST =>2,
+            ]);
+            $status = json_decode($lead['json_response'],true)['status_id'];
+            if ($status == 142){
+                $action = [1,$id];
+            }else{
+                $action = [2,''];
             }
         }
 
